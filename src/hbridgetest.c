@@ -1,3 +1,8 @@
+/*
+ * nRF5340 H-Bridge Motor Control Test
+ * For use with nRF Connect SDK / Zephyr
+ */
+
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
@@ -8,10 +13,10 @@ LOG_MODULE_REGISTER(motor_test, LOG_LEVEL_INF);
 /* The devicetree node identifier for the "led0" alias. */
 #define GPIO0_NODE DT_NODELABEL(gpio0)
 
-// Pin definitions - using easily accessible pins from nRF5340 DK
-#define NSLEEP_PIN 28    // P0.28 - easily accessible on the DK
-#define IN1_PIN 29       // P0.29 - easily accessible on the DK  
-#define IN2_PIN 30       // P0.30 - easily accessible on the DK
+// Pin definitions
+#define NSLEEP_PIN 28    // P0.28
+#define IN1_PIN 29       // P0.29
+#define IN2_PIN 30       // P0.30
 
 static const struct device *gpio_dev;
 
