@@ -2,176 +2,171 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
+#include <string.h> // Needed for strncmp
 
-LOG_MODULE_REGISTER(motor_test, LOG_LEVEL_INF);
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/conn.h>
+#include <bluetooth/services/nus.h>
 
-/* The devicetree node identifier for the "led0" alias. */
+LOG_MODULE_REGISTER(ble_motor_control, LOG_LEVEL_INF);
+
+/*
+ * ============================================================================
+ * H-Bridge Motor Control Section
+ * ============================================================================
+ */
+
 #define GPIO0_NODE DT_NODELABEL(gpio0)
 
-// Pin definitions - using easily accessible pins from nRF5340 DK
-#define NSLEEP_PIN 28    // P0.28 - easily accessible on the DK
-#define IN1_PIN 29       // P0.29 - easily accessible on the DK  
-#define IN2_PIN 30       // P0.30 - easily accessible on the DK
+// Pin definitions
+#define NSLEEP_PIN 28    // P0.28
+#define IN1_PIN    29    // P0.29
+#define IN2_PIN    30    // P0.30
 
 static const struct device *gpio_dev;
 
-/**
- * Initialize GPIO pins for H-bridge control
- */
 int motor_pins_init(void)
 {
-    // Get GPIO device
     gpio_dev = DEVICE_DT_GET(GPIO0_NODE);
     if (!device_is_ready(gpio_dev)) {
         LOG_ERR("GPIO device not ready");
         return -ENODEV;
     }
-
-    // Configure nSLEEP pin as output (start disabled)
-    int ret = gpio_pin_configure(gpio_dev, NSLEEP_PIN, GPIO_OUTPUT_INACTIVE);
-    if (ret < 0) {
-        LOG_ERR("Failed to configure nSLEEP pin: %d", ret);
-        return ret;
-    }
-
-    // Configure IN1 pin as output
-    ret = gpio_pin_configure(gpio_dev, IN1_PIN, GPIO_OUTPUT_INACTIVE);
-    if (ret < 0) {
-        LOG_ERR("Failed to configure IN1 pin: %d", ret);
-        return ret;
-    }
-
-    // Configure IN2 pin as output
-    ret = gpio_pin_configure(gpio_dev, IN2_PIN, GPIO_OUTPUT_INACTIVE);
-    if (ret < 0) {
-        LOG_ERR("Failed to configure IN2 pin: %d", ret);
-        return ret;
-    }
-
-    LOG_INF("Motor pins initialized: nSLEEP=P0.%d, IN1=P0.%d, IN2=P0.%d", 
-            NSLEEP_PIN, IN1_PIN, IN2_PIN);
+    gpio_pin_configure(gpio_dev, NSLEEP_PIN, GPIO_OUTPUT_INACTIVE);
+    gpio_pin_configure(gpio_dev, IN1_PIN, GPIO_OUTPUT_INACTIVE);
+    gpio_pin_configure(gpio_dev, IN2_PIN, GPIO_OUTPUT_INACTIVE);
+    LOG_INF("Motor pins initialized");
     return 0;
 }
 
-/**
- * Enable the H-bridge chip
- */
 void motor_enable(void)
 {
     gpio_pin_set(gpio_dev, NSLEEP_PIN, 1);
-    k_busy_wait(50);  // Wait 50us for wake-up
-    LOG_DBG("Motor enabled");
+    k_busy_wait(50);
 }
 
-/**
- * Disable the H-bridge chip  
- */
 void motor_disable(void)
 {
     gpio_pin_set(gpio_dev, NSLEEP_PIN, 0);
-    LOG_DBG("Motor disabled");
 }
 
-/**
- * Stop motor (coast mode - both inputs low)
- */
 void motor_stop(void)
 {
     gpio_pin_set(gpio_dev, IN1_PIN, 0);
     gpio_pin_set(gpio_dev, IN2_PIN, 0);
-    LOG_DBG("Motor stopped");
 }
 
-/**
- * Run motor forward (IN1=HIGH, IN2=LOW)
- */
 void motor_forward(void)
 {
     gpio_pin_set(gpio_dev, IN1_PIN, 1);
     gpio_pin_set(gpio_dev, IN2_PIN, 0);
-    LOG_DBG("Motor forward");
 }
 
-/**
- * Run motor reverse (IN1=LOW, IN2=HIGH)
- */
-void motor_reverse(void)
-{
-    gpio_pin_set(gpio_dev, IN1_PIN, 0);
-    gpio_pin_set(gpio_dev, IN2_PIN, 1);
-    LOG_DBG("Motor reverse");
-}
 
-/**
- * Brake motor (both inputs high)
+/*
+ * ============================================================================
+ * Bluetooth LE & NUS Section
+ * ============================================================================
  */
-void motor_brake(void)
-{
-    gpio_pin_set(gpio_dev, IN1_PIN, 1);
-    gpio_pin_set(gpio_dev, IN2_PIN, 1);
-    LOG_DBG("Motor brake");
-}
 
-/**
- * Simple vibration test
- */
-void vibration_test(void)
+static struct bt_conn *current_conn;
+
+static const struct bt_data ad[] = {
+    BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+    BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_NUS_VAL),
+};
+
+// Data received callback for NUS
+static void ble_data_received(struct bt_conn *conn, const uint8_t *const data, uint16_t len)
 {
-    LOG_INF("Starting vibration test");
-    
-    motor_enable();
-    
-    // Test sequence: 3 short pulses
-    for (int i = 0; i < 3; i++) {
-        LOG_INF("Pulse %d/3", i + 1);
+    ARG_UNUSED(conn);
+    LOG_INF("Received data: %.*s", len, data);
+
+    if (len >= 2 && strncmp(data, "ON", 2) == 0) {
+        LOG_INF("Motor ON command received");
+        motor_enable();
         motor_forward();
-        k_msleep(200);  // 200ms on
+    } else if (len >= 3 && strncmp(data, "OFF", 3) == 0) {
+        LOG_INF("Motor OFF command received");
         motor_stop();
-        if (i < 2) {  // Don't delay after last pulse
-            k_msleep(100);  // 100ms off
-        }
+        motor_disable();
     }
-    
-    // One longer vibration
-    k_msleep(500);
-    LOG_INF("Long vibration");
-    motor_forward();
-    k_msleep(800);  // 800ms on
-    motor_stop();
-    
-    motor_disable();
-    LOG_INF("Vibration test complete");
 }
 
-/**
- * Main function
+static struct bt_nus_cb nus_cb = {
+    .received = ble_data_received,
+};
+
+// Connection callbacks
+static void connected(struct bt_conn *conn, uint8_t err)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
+    if (err) {
+        LOG_ERR("Connection failed (err %u)", err);
+        return;
+    }
+    LOG_INF("Connected to %s", addr);
+    current_conn = bt_conn_ref(conn);
+}
+
+static void disconnected(struct bt_conn *conn, uint8_t reason)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_INF("Disconnected from %s (reason %u)", addr, reason);
+
+    if (current_conn) {
+        bt_conn_unref(current_conn);
+        current_conn = NULL;
+    }
+}
+
+BT_CONN_CB_DEFINE(conn_callbacks) = {
+    .connected = connected,
+    .disconnected = disconnected,
+};
+
+/*
+ * ============================================================================
+ * Main Application
+ * ============================================================================
  */
+
 int main(void)
 {
-    LOG_INF("nRF5340 H-Bridge Simple Test Starting");
-    LOG_INF("This will test your coin vibration motor");
+    int err;
+    LOG_INF("Vibration Motor BLE Controller Starting...");
 
-    // Initialize pins
-    int ret = motor_pins_init();
-    if (ret < 0) {
-        LOG_ERR("Failed to initialize motor pins: %d", ret);
-        return ret;
+    // 1. Initialize motor control pins
+    err = motor_pins_init();
+    if (err) {
+        LOG_ERR("Failed to initialize motor pins. Halting.");
+        return 0;
     }
 
-    // Wait a bit before starting
-    k_msleep(2000);
-
-    // Main test loop
-    while (1) {
-        LOG_INF("=== Running motor test cycle ===");
-        
-        // Run vibration test
-        vibration_test();
-        
-        // Wait 5 seconds before next test
-        LOG_INF("Waiting 5 seconds before next test...");
-        k_msleep(5000);
+    // 2. Enable the Bluetooth stack
+    err = bt_enable(NULL);
+    if (err) {
+        LOG_ERR("Bluetooth init failed (err %d)", err);
+        return 0;
     }
 
+    // 3. Initialize the Nordic UART Service (NUS)
+    err = bt_nus_init(&nus_cb);
+    if (err) {
+        LOG_ERR("Failed to init NUS (err %d)", err);
+        return 0;
+    }
+
+    // 4. Start advertising
+    err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
+    if (err) {
+        LOG_ERR("Advertising failed to start (err %d)", err);
+        return 0;
+    }
+
+    LOG_INF("Setup complete. Advertising as 'VibMotor'.");
     return 0;
 }
