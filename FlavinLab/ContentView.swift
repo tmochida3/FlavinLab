@@ -49,7 +49,7 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         }
     }
     
-    private func sendCommand(_ command: String) {
+    func sendCommand(_ command: String) {
         guard let peripheral = peripheral,
               let characteristic = rxCharacteristic,
               let data = command.data(using: .utf8) else {
@@ -142,13 +142,34 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
 }
 
 // Main App View
+// Main App View
 struct ContentView: View {
     @StateObject private var bluetoothManager = BluetoothManager()
-    @State private var isButtonPressed = false
     
+    // Use a gesture to detect press and release
+    var longPressGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { _ in
+                // This is called AS SOON as the finger touches down
+                if !isVibrating { // Send "ON" only once
+                    isVibrating = true
+                    bluetoothManager.sendCommand("ON")
+                    hapticFeedback()
+                }
+            }
+            .onEnded { _ in
+                // This is called when the finger is lifted
+                isVibrating = false
+                bluetoothManager.sendCommand("OFF")
+            }
+    }
+    
+    // State to manage the visual effect and prevent sending "ON" multiple times
+    @State private var isVibrating = false
+
     var body: some View {
         VStack(spacing: 30) {
-            // Status Header
+            // Status Header (no changes here)
             VStack(spacing: 8) {
                 Image(systemName: bluetoothManager.isConnected ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
                     .font(.system(size: 50))
@@ -162,57 +183,33 @@ struct ContentView: View {
             
             Spacer()
             
-            // Main Vibrate Button
-            Button(action: {
-                if bluetoothManager.isConnected {
-                    // Haptic feedback on device
-                    #if canImport(UIKit)
-                    let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
-                    impactFeedback.prepare()
-                    impactFeedback.impactOccurred()
-                    #elseif canImport(AppKit)
-                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-                    #endif
+            // Main Vibrate Button, now with the gesture
+            ZStack {
+                Circle()
+                    .fill(bluetoothManager.isConnected ? Color.blue : Color.gray)
+                    .frame(width: 200, height: 200)
+                    .scaleEffect(isVibrating ? 0.95 : 1.0) // Visual feedback tied to isVibrating
+                    .shadow(color: bluetoothManager.isConnected ? Color.blue.opacity(0.3) : Color.clear,
+                           radius: isVibrating ? 20 : 10)
+                
+                VStack {
+                    Image(systemName: "hand.tap.fill")
+                        .font(.system(size: 50))
+                        .foregroundColor(.white)
                     
-                    // Trigger motor vibration
-                    bluetoothManager.vibrate()
-                    
-                    // Visual feedback
-                    withAnimation(.easeInOut(duration: 0.1)) {
-                        isButtonPressed = true
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        withAnimation(.easeInOut(duration: 0.1)) {
-                            isButtonPressed = false
-                        }
-                    }
-                }
-            }) {
-                ZStack {
-                    Circle()
-                        .fill(bluetoothManager.isConnected ? Color.blue : Color.gray)
-                        .frame(width: 200, height: 200)
-                        .scaleEffect(isButtonPressed ? 0.95 : 1.0)
-                        .shadow(color: bluetoothManager.isConnected ? Color.blue.opacity(0.3) : Color.clear,
-                               radius: isButtonPressed ? 20 : 10)
-                    
-                    VStack {
-                        Image(systemName: "hand.tap.fill")
-                            .font(.system(size: 50))
-                            .foregroundColor(.white)
-                        
-                        Text("VIBRATE")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .foregroundColor(.white)
-                    }
+                    Text("HOLD TO VIBRATE") // Updated text
+                        .font(.title3)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
                 }
             }
+            .gesture(longPressGesture) // Apply the gesture to the button area
             .disabled(!bluetoothManager.isConnected)
+            .animation(.easeInOut(duration: 0.1), value: isVibrating) // Animate the visual state change
             
             Spacer()
             
-            // Connection Button
+            // Connection Button (no changes here)
             if !bluetoothManager.isConnected && !bluetoothManager.isScanning {
                 Button(action: {
                     bluetoothManager.startScanning()
@@ -229,12 +226,15 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        #if canImport(UIKit)
         .background(Color(UIColor.systemBackground))
-        #elseif canImport(AppKit)
-        .background(Color(NSColor.windowBackgroundColor))
-        #else
-        .background(Color.black)
+    }
+    
+    // Helper function for haptics to keep the main code clean
+    private func hapticFeedback() {
+        #if canImport(UIKit)
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.prepare()
+        impactFeedback.impactOccurred()
         #endif
     }
 }
